@@ -33,33 +33,33 @@ class DetermineDeviceMapping
             {
                 $deviceMappingFrequency = 5;
             }
-            $now = new Carbon("UTC");
-            $lastDeviceMappingRun = TemporaryVariables::get("Device Mapping Running");
-            if ($lastDeviceMappingRun != null)
-            {
-                try {
-                    $lastDeviceMappingRunCarbon = new Carbon($lastDeviceMappingRun, "UTC");
-                    if ($now->diffInMinutes($lastDeviceMappingRunCarbon) < $deviceMappingFrequency)
-                    {
-                        if (getenv('DEBUG') == "true")
-                        {
-                            $logger->log("Last device mapping cycle was less than $deviceMappingFrequency minutes ago, aborting.",Logger::INFO);
-                        }
-                        return;
-                    }
-                }
-                catch (Exception $e)
-                {
-                    $logger->log("Could not instantiate Carbon from $lastDeviceMappingRun", Logger::ERROR);
-                }
-            }
+            
+			
+			$currentMinutes = (microtime(true)/60);
+			$lastRun = TemporaryVariables::get("Last Device Mapping Run");
+			
+			if ($currentMinutes - $lastRun < (int)getenv("DEVICE_MAPPING_FREQUENCY") )
+			{
+				if (getenv('DEBUG') == "true")
+				{
+					$logger->log("Last device mapping cycle was less than $deviceMappingFrequency minutes ago, aborting.",Logger::INFO);
+				}
+				return;
+			}
+			else
+			{
+				if (getenv('DEBUG') == "true")
+				{
+					$logger->log("Last device mapping cycle was not less than $deviceMappingFrequency minutes ago, MAPPING for you.",Logger::INFO);	
+				}
+			}
+			
+			TemporaryVariables::set("Last Device Mapping Run",$currentMinutes);
 
             if (getenv('DEBUG') == "true")
             {
                 $logger->log("Starting device mapping cycle.",Logger::INFO);
             }
-
-            TemporaryVariables::set("Device Mapping Running", $now->toDateTimeString());
 
             $startTime = time();
 
@@ -75,9 +75,13 @@ class DetermineDeviceMapping
             }
 
             $timeTaken = time() - $startTime;
-
+			if (getenv('DEBUG') == "true")
+            {
+                $logger->log("Uploading device mapping Results.",Logger::INFO);
+            }
             try {
                 $client = new Client();
+				$logger->log("Uploading device mapping to sonar", Logger::INFO);
                 $client->post(getenv("SONAR_URI") . "/api/poller/device_mapping", [
                     'headers' => [
                         'Content-Type' => 'application/json',

@@ -33,6 +33,7 @@ class DeviceMappingPoller
     private $log;
     private $retries;
     private $templates;
+	private $totalTimeout;
 
     /**
      * DeviceMappingPoller constructor.
@@ -44,6 +45,7 @@ class DeviceMappingPoller
         $this->snmpForks = (int)getenv("SNMP_FORKS") > 0 ? (int)getenv("SNMP_FORKS") : 25;
         $this->timeout = (int)getenv("SNMP_TIMEOUT") > 0 ? (int)getenv("SNMP_TIMEOUT")*1000000 : 500000;
         $this->retries = (int)getenv("SNMP_RETRIES");
+		$this->totalTimeout = (int)getenv("DEVICE_MAPPING_TIMEOUT") > 0 ? (int)getenv("DEVICE_MAPPING_TIMEOUT") * 60 : 300;
         $this->log = new SonarLogger();
     }
 
@@ -86,14 +88,31 @@ class DeviceMappingPoller
 
                 foreach ($myChunksWithDeviceType as $hostWithDeviceType)
                 {
+					$output = false;
                     try {
+                        $time_start = microtime(true);
                         $device = new Device();
                         $device->setId($hostWithDeviceType['id']);
                         $device->setSnmpObject($this->buildSnmpObjectForHost($hostWithDeviceType));
-
+						if (getenv('DEBUG') == "true")
+						{
+							//this allows a savvy user to be able to determine which threads are failing and can whittle down the hosts causing the problems
+							$output = fopen("/tmp/".$fileUniquePrefix . "_MAPPER_HOST_" . $hostWithDeviceType['ip'] ,"w");
+							fclose($output);
+						}
                         //Additional 'case' statements can be added here to break out querying to a separate device mapper
                         $mapper = $this->getDeviceMapper($hostWithDeviceType, $device);
                         $device = $mapper->mapDevice();
+
+                        //figure out if we're running overtime to poll devices
+                        $time_end = microtime(true); 
+                        $device->setTimer($time_end-$time_start);
+                        if (getenv('DEBUG') == "true")
+                        {
+                            if($device->getTimer() > 25){
+                                $this->log->log("{$hostWithDeviceType['ip']} took longer than 25 seconds to poll",Logger::ERROR);
+                            }
+                        }
                         array_push($devices, $device->toArray());
                     }
                     catch (Exception $e)
@@ -102,8 +121,11 @@ class DeviceMappingPoller
                         {
                             $this->log->log("Failed to get mappings from {$hostWithDeviceType['ip']}, got {$e->getMessage()}",Logger::ERROR);
                         }
-                        continue;
                     }
+					if (getenv('DEBUG') == "true")
+					{
+						unlink("/tmp/".$fileUniquePrefix . "_MAPPER_HOST_" . $hostWithDeviceType['ip']);
+					}
                 }
 
                 fwrite($childFile,json_encode($devices));
@@ -118,6 +140,7 @@ class DeviceMappingPoller
             }
         }
 
+		$timeout_start = microtime(true); 
         while (count($pids) > 0)
         {
             foreach ($pids as $pid)
@@ -128,7 +151,27 @@ class DeviceMappingPoller
                     unset($pids[$pid]);
                 }
             }
-
+			///Get this validated and operational to kill rogue processes so they doesn't lock up the monitoring 
+			$timeout_end = microtime(true);
+			if($timeout_end-$timeout_start > $this->totalTimeout){
+                foreach ($pids as $pid)
+                {
+                	posix_kill($pid,SIGKILL);
+                    if (getenv('DEBUG') == "true")
+                    {
+                        $this->log->log("Destrying PID" . $pid,Logger::INFO);
+                    }
+                	$res = pcntl_waitpid($pid, $status, WNOHANG);
+					if ($res == -1 || $res > 0)
+                	{
+                		unset($pids[$pid]);
+                	}
+                }
+            }
+            if (getenv('DEBUG') == "true")
+            {
+			    $this->log->log("Total Pids remaining: ". count($pids),Logger::INFO);
+            }
             sleep(1);
         }
 
@@ -264,6 +307,10 @@ class DeviceMappingPoller
         $updatedChunks = [];
         foreach ($chunks as $host)
         {
+            //Check to see if we have manually disabled snmp polling on our ICMP only devices
+			$templateDetails = $this->templates[$host['template_id']];
+            if($templateDetails['snmp_community'] == "disabled" || $host['snmp_overrides']['snmp_community'] == "disabled" ) continue;
+			
             $snmpObject = $this->buildSnmpObjectForHost($host);
             try {
                 $result = $snmpObject->get("1.3.6.1.2.1.1.2.0");

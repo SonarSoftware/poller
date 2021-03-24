@@ -106,10 +106,10 @@ function queueDeviceMappingWork(stdClass $contents)
 {
     $climate = new CLImate();
     $formatter = new Formatter();
-
-    $work = $formatter->formatDeviceMappingWork($contents);
-    $token = Resque::enqueue('polling', 'SonarSoftware\Poller\Jobs\DetermineDeviceMapping', $work, true);
-    $climate->lightGreen("Enqueued device mapping job and got token $token");
+	
+	$work = $formatter->formatDeviceMappingWork($contents);
+	$token = Resque::enqueue('polling', 'SonarSoftware\Poller\Jobs\DetermineDeviceMapping', $work, true);
+	$climate->lightGreen("Enqueued device mapping job and got token $token");
 }
 
 /**

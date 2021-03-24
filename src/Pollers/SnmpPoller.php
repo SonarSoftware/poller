@@ -17,6 +17,7 @@ class SnmpPoller
     protected $log;
     protected $retries;
     protected $templates;
+	protected $totalTimeout;
 
     /** Status constants */
     const GOOD = 2;
@@ -30,6 +31,7 @@ class SnmpPoller
         $this->snmpForks = (int)getenv("SNMP_FORKS") > 0 ? (int)getenv("SNMP_FORKS") : 25;
         $this->timeout = (int)getenv("SNMP_TIMEOUT") > 0 ? (int)getenv("SNMP_TIMEOUT")*1000000 : 500000;
         $this->retries = (int)getenv("SNMP_RETRIES");
+		$this->totalTimeout = (int)getenv("SNMP_POLLING_TIMEOUT") > 0 ? (int)getenv("SNMP_POLLING_TIMEOUT") * 60 : 300;
         $this->log = new SonarLogger();
     }
 
@@ -73,7 +75,7 @@ class SnmpPoller
             }
         }
 
-
+        $timeout_start = microtime(true); 
         while (count($pids) > 0)
         {
             foreach ($pids as $pid)
@@ -84,7 +86,27 @@ class SnmpPoller
                     unset($pids[$pid]);
                 }
             }
-
+			///Get this validated and operational to kill rogue processes so they doesn't lock up the monitoring 
+			$timeout_end = microtime(true);
+			if($timeout_end-$timeout_start > $this->totalTimeout){
+                foreach ($pids as $pid)
+                {
+                	posix_kill($pid,SIGKILL);
+                    if (getenv('DEBUG') == "true")
+                    {
+                        $this->log->log("Destrying PID" . $pid,Logger::INFO);
+                    }
+                	$res = pcntl_waitpid($pid, $status, WNOHANG);
+					if ($res == -1 || $res > 0)
+                	{
+                		unset($pids[$pid]);
+                	}
+                }
+            }
+            if (getenv('DEBUG') == "true")
+            {
+			    $this->log->log("Total Pids remaining: ". count($pids),Logger::INFO);
+            }
             sleep(1);
         }
 
@@ -143,7 +165,9 @@ class SnmpPoller
      */
     private function pollDevices($chunks, $fileUniquePrefix, $counter)
     {
-        $handle = fopen("/tmp/$fileUniquePrefix" . "_sonar_$counter","w");
+        $handle = fopen("/tmp/".$fileUniquePrefix . "_sonar_" . $counter,"w");
+		$output = false;
+        
         if ($handle === false)
         {
             $this->log->log("Failed to open handle for /tmp/$fileUniquePrefix" . "_sonar_$counter",Logger::ERROR);
@@ -151,7 +175,6 @@ class SnmpPoller
         }
 
         $resultToWrite = [];
-
         foreach ($chunks as $host)
         {
             $resultToWrite[$host['ip']] = [
@@ -164,15 +187,27 @@ class SnmpPoller
                     'status_reason' => null,
                 ],
                 'time' => time(),
+				//timer indicates how long(in real time) it took to complete the request for this single device.
+				'timer' => 0.0, ///TODO add timer field in the Sonar instance for readability and easy debugging. 
             ];
-
+			$time_start = microtime(true); 
             $templateDetails = $this->templates[$host['template_id']];
-
             if (count($templateDetails['oids']) === 0 && $templateDetails['collect_interface_statistics'] == false)
             {
                 continue;
             }
-
+			//Exit out for ICMP only devices, do not waste resources on them.
+            if($templateDetails['snmp_community'] == "disabled" || $host['snmp_overrides']['snmp_community'] == "disabled"){
+            	continue;
+            }
+			
+			if (getenv('DEBUG') == "true")
+			{
+				//this allows a savvy user to be able to determine which threads are failing and can whittle down the hosts causing the problems
+				$output = fopen("/tmp/".$fileUniquePrefix . "_HOST_" . $host['ip'] ,"w");
+				fclose($output);
+			}
+			
             $snmpVersion = isset($host['snmp_overrides']['snmp_version']) ? $host['snmp_overrides']['snmp_version'] : $templateDetails['snmp_version'];
 
             switch ($snmpVersion)
@@ -243,8 +278,24 @@ class SnmpPoller
                     //Ignore, the device might not support 64bit counters
                 }
             }
-        }
+            $time_end = microtime(true); 
+            $resultToWrite[$host['ip']]['timer'] = $time_end-$time_start;
 
+            if ($resultToWrite[$host['ip']]['timer'] > 20) {
+                if (getenv('DEBUG') == "true")
+                {
+                    $this->log->log("{$host['ip']} took {$resultToWrite[$host['ip']]['timer']} seconds to poll",Logger::WARNING);
+                }
+            }
+			
+			//we delete the file, and so only the problem hosts that do not exit their process gracefully are left. 
+			if (getenv('DEBUG') == "true")
+			{
+				unlink("/tmp/".$fileUniquePrefix . "_HOST_" . $host['ip']);
+			}
+        }
+		
+        
         fwrite($handle, json_encode($resultToWrite));
         fclose($handle);
     }

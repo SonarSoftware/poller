@@ -11,6 +11,7 @@ class Device
     private $id;
     private $metadata = [];
     private $snmpObject;
+    private $timer;
 
     /**
      * @return array
@@ -20,6 +21,7 @@ class Device
         $structure = [
             'id' => $this->id,
             'metadata' => $this->metadata,
+            'timer' => $this->timer,
             'interfaces' => [],
         ];
 
@@ -102,5 +104,21 @@ class Device
     public function getId():int
     {
         return $this->id;
+    }
+	
+	/**
+     * @param float $timer in ms
+     */
+	public function setTimer(float $timer)
+    {
+        $this->timer = $timer;
+    }
+
+    /**
+     * @return int timer in ms
+     */
+    public function getTimer():float
+    {
+        return $this->timer;
     }
 }
